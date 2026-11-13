@@ -436,7 +436,8 @@ pub struct UninstallReport {
     pub neutralized_pending_config: Option<PathBuf>,
     /// Why the app's `config.toml` (or its pending sidecar) is still live:
     /// it was left alone because it could not be made inert safely
-    /// (unreadable, malformed or newer), or the write/read-back failed.
+    /// (unreadable, malformed, newer, or rejected by the settings loader),
+    /// or the write/read-back failed.
     /// Absent when the file is missing or already inert.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_config_error: Option<String>,
@@ -547,6 +548,9 @@ pub fn uninstall(host: &Host) -> UninstallReport {
 /// Returns the new text when anything changed, `None` when it is already
 /// inert. `deep_mode` is left alone: the issue only asks for automatic
 /// execution to stop, and `deep_mode` on its own does not run anything.
+/// The result — changed or already inert — is validated through the real
+/// settings loader, not just the fields this edit touches: a file the loader
+/// rejects is left alone with an error either way.
 fn inert_config_text(text: &str) -> Result<Option<String>, String> {
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("not valid TOML: {e}"))?;
     // Same version rules as `Settings::read_settings`: missing means 0, a
@@ -581,7 +585,31 @@ fn inert_config_text(text: &str) -> Result<Option<String>, String> {
             changed |= disable_backends(backends)?;
         }
     }
-    Ok(if changed { Some(doc.to_string()) } else { None })
+    // Validate the result — changed or already inert — through the real
+    // settings loader. A file can be valid TOML with an unrelated field the
+    // loader rejects (e.g. `theme = 123`); the app would then rename it aside
+    // and fall back to defaults with auto mode on again, so reporting it inert
+    // would be a lie either way.
+    let candidate = if changed { doc.to_string() } else { text.to_string() };
+    let loaded = craft_anything_engine::settings::read_settings(&candidate).map_err(|e| format!("the app can't load it as settings: {e}"))?;
+    if loaded.auto_mode {
+        return Err("the loaded settings still have auto_mode on".to_string());
+    }
+    if any_backend_live(&loaded) {
+        return Err("the loaded settings still have an ai.backends entry enabled".to_string());
+    }
+    Ok(if changed { Some(candidate) } else { None })
+}
+
+/// Whether any `[[ai.backends]]` entry in already-loaded settings is still
+/// enabled. A missing `enabled` key counts as on, as does a non-boolean one.
+fn any_backend_live(settings: &craft_anything_engine::settings::Settings) -> bool {
+    let Some(backends) = settings.ai.get("backends") else { return false };
+    let Some(array) = backends.as_array() else { return true };
+    array.iter().any(|entry| {
+        let Some(table) = entry.as_table() else { return true };
+        table.get("enabled").is_none_or(|v| v.as_bool().unwrap_or(true))
+    })
 }
 
 /// Set `enabled = false` on every backend entry. `[[ai.backends]]` parses

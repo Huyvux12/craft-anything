@@ -431,6 +431,58 @@ fn uninstall_rejects_negative_version_app_config() {
     assert_eq!(read(&p), negative);
 }
 
+/// #1191 review (FredApps): valid TOML with an invalid *unrelated* Settings
+/// field must be left alone too. `theme = 123` parses as TOML, but the real
+/// loader rejects it — and `Settings::load_from` would then rename the file
+/// and fall back to defaults with auto_mode on again. Reporting such a file
+/// inert would be a lie either way: after editing it, or as already inert.
+#[test]
+fn uninstall_leaves_valid_toml_with_invalid_unrelated_field_alone() {
+    let fx = fixture();
+    let bad_theme =
+        "version = 3\nauto_mode = true\ntheme = 123\n\n[[ai.backends]]\nenabled = true\nkind = \"agent_cli\"\nmodel = \"opencode\"\nname = \"OpenCode\"\n";
+    assert!(craft_anything_engine::settings::read_settings(bad_theme).is_err());
+    let p = write_app_config(&fx, bad_theme);
+    let u = uninstall(&fx.host);
+    assert_eq!(u.status, "partial", "{u:?}");
+    assert_eq!(u.neutralized_config, None);
+    assert!(u.app_config_error.is_some(), "{u:?}");
+    assert_eq!(read(&p), bad_theme);
+}
+
+#[test]
+fn uninstall_reports_partial_for_already_inert_but_unloadable_app_config() {
+    let fx = fixture();
+    let inert_but_bad =
+        "version = 3\nauto_mode = false\ntheme = 123\n\n[[ai.backends]]\nenabled = false\nkind = \"agent_cli\"\nmodel = \"opencode\"\nname = \"OpenCode\"\n";
+    assert!(craft_anything_engine::settings::read_settings(inert_but_bad).is_err());
+    let p = write_app_config(&fx, inert_but_bad);
+    let u = uninstall(&fx.host);
+    // Already false, but the app cannot load the file at all, so it is not
+    // inert — it must be partial, not a quiet success.
+    assert_eq!(u.status, "partial", "{u:?}");
+    assert_eq!(u.neutralized_config, None);
+    assert!(u.app_config_error.is_some(), "{u:?}");
+    assert_eq!(read(&p), inert_but_bad);
+}
+
+#[test]
+fn uninstall_reports_partial_when_pending_sidecar_has_invalid_unrelated_field() {
+    let fx = fixture();
+    let p = write_app_config(&fx, APP_CONFIG);
+    let pending = "version = 3\nlanguage = \"de\"\nauto_mode = true\ntheme = 123\n";
+    let pp = p.with_extension("pending.toml");
+    std::fs::write(&pp, pending).unwrap();
+    let u = uninstall(&fx.host);
+    // The main config is inert, but the sidecar cannot be made inert safely,
+    // so the uninstall is honestly partial, not a success.
+    assert_eq!(u.status, "partial", "{u:?}");
+    assert_eq!(u.neutralized_config.as_deref(), Some(p.as_path()));
+    assert_eq!(u.neutralized_pending_config, None);
+    assert!(u.app_config_error.as_deref().unwrap_or_default().contains("pending.toml"), "{u:?}");
+    assert_eq!(read(&pp), pending);
+}
+
 /// Switch the process working directory for the duration of a test and
 /// restore it on drop, even on panic. No other test in this crate reads the
 /// working directory, so the switch cannot disturb them.

@@ -573,6 +573,8 @@ file unreadable, dropping its code, names and constants from reports. A reader c
 must preserve fields and payload it can still understand: report the unknown bits as a warning,
 derive known modes from their defined bits, and test that the warning and recovered data coexist.
 
+**Validating only the fields you edit.** Uninstall's `inert_config_text` checked just `version`, `auto_mode` and `ai.backends`, so a file with valid TOML but an unrelated field the settings loader rejects (`theme = 123`) was reported inert — and the app, on next load, renames such a file aside and falls back to defaults with auto mode on again. Validate a rewritten config through the real loader (`read_settings`) and check the loaded automatic-execution state (`auto_mode` off, no backend enabled) before accepting either the changed or the already-inert result; a file the loader rejects stays untouched and the uninstall is partial. Test the invalid-unrelated-field case, not only syntax errors and bad versions, for both the main config and the pending sidecar.
+
 **A round of checks that nothing could stop.** The builder's own checks ran one after another on
 the build's thread with no time limit, Pause was looked at only between tool calls, and the feed
 said only "checking its work against the original" for the whole round, so a check that stalled
